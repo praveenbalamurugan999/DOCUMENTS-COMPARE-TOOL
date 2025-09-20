@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Enhanced PDF Compare with Highlights</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    .pdf-container { display: flex; gap: 20px; }
+    .pdf-viewer {
+      position: relative;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      overflow: auto;
+      width: 48%;
+      height: 600px;
+      background: #f9f9f9;
+    }
+    canvas { display: block; margin: 0 auto; }
+    .overlay {
+      position: absolute;
+      top: 0; left: 0;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <h2>Compare Two PDFs with Highlights</h2>
+  <input type="file" id="pdf1" accept="application/pdf">
+  <input type="file" id="pdf2" accept="application/pdf">
+  <button onclick="comparePDFs()">Compare</button>
+
+  <div class="pdf-container">
+    <div id="viewer1" class="pdf-viewer"></div>
+    <div id="viewer2" class="pdf-viewer"></div>
+  </div>
+
+  <script>
+    async function renderPDF(file, containerId, highlights) {
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      const container = document.getElementById(containerId);
+      container.innerHTML = "";
+
+      for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+        const page = await pdf.getPage(pageNum);
+        const scale = 1.5;
+        const viewport = page.getViewport({ scale });
+
+        // Render PDF page
+        const canvas = document.createElement("canvas");
+        const ctx = canvas.getContext("2d");
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+        container.appendChild(canvas);
+
+        await page.render({ canvasContext: ctx, viewport }).promise;
+
+        // Overlay for highlights
+        const overlay = document.createElement("canvas");
+        overlay.className = "overlay";
+        overlay.width = viewport.width;
+        overlay.height = viewport.height;
+        overlay.style.top = canvas.offsetTop + "px";
+        overlay.style.left = canvas.offsetLeft + "px";
+        container.appendChild(overlay);
+
+        const octx = overlay.getContext("2d");
+
+        if (highlights[pageNum]) {
+          highlights[pageNum].forEach(({x,y,width,height,type}) => {
+            octx.fillStyle = type === "removed" 
+              ? "rgba(255,0,0,0.4)"   // red for removed
+              : "rgba(0,255,0,0.4)"; // green for added
+            octx.fillRect(x, y, width, height);
+          });
+        }
+      }
+    }
+
+    async function extractTextPositions(pdfFile, scale=1.5) {
+      const arrayBuffer = await pdfFile.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      let textByPage = {};
+
+      for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+        const page = await pdf.getPage(pageNum);
+        const viewport = page.getViewport({ scale });
+        const content = await page.getTextContent();
+
+        textByPage[pageNum] = content.items.map(item => {
+          const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+          return {
+            str: item.str,
+            x: tx[4],
+            y: tx[5] - item.height, // adjust baseline
+            width: item.width * scale,
+            height: item.height * scale
+          };
+        });
+      }
+      return textByPage;
+    }
+
+    // Simple diff: check word presence instead of strict index
+    function diffPages(words1, words2) {
+      let highlights1 = {}, highlights2 = {};
+      Object.keys(words1).forEach(pageNum => {
+        highlights1[pageNum] = [];
+        highlights2[pageNum] = [];
+
+        const pageWords1 = words1[pageNum] || [];
+        const pageWords2 = words2[pageNum] || [];
+
+        const textSet2 = new Set(pageWords2.map(w => w.str));
+        const textSet1 = new Set(pageWords1.map(w => w.str));
+
+        pageWords1.forEach(w => {
+          if (!textSet2.has(w.str)) highlights1[pageNum].push({...w, type:"removed"});
+        });
+        pageWords2.forEach(w => {
+          if (!textSet1.has(w.str)) highlights2[pageNum].push({...w, type:"added"});
+        });
+      });
+      return [highlights1, highlights2];
+    }
+
+    async function comparePDFs() {
+      const file1 = document.getElementById("pdf1").files[0];
+      const file2 = document.getElementById("pdf2").files[0];
+      if (!file1 || !file2) return alert("Please upload two PDFs");
+
+      const text1 = await extractTextPositions(file1);
+      const text2 = await extractTextPositions(file2);
+
+      const [highlights1, highlights2] = diffPages(text1, text2);
+
+      await renderPDF(file1, "viewer1", highlights1);
+      await renderPDF(file2, "viewer2", highlights2);
+    }
+  </script>
+</body>
+</html>
